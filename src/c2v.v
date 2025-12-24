@@ -273,7 +273,7 @@ fn (mut c C2V) add_var_func_name(mut the_map map[string]string, c_string string)
 	if v := the_map[c_string] {
 		return v
 	}
-	mut v_string := c_string.camel_to_snake().trim_left('_')
+	mut v_string := c.filter_wrapper_name(c_string, false)
 	if v_string in the_map.values() {
 		vprintln('${@FN}dup: ${c_string} => ${v_string}')
 		v_string += '_vdup' + c.cnt.str() // renaming the variable's name, avoid duplicate
@@ -290,7 +290,7 @@ fn (mut c C2V) add_struct_name(mut the_map map[string]string, c_string string) s
 	if v := the_map[c_string] {
 		return v
 	}
-	mut v_string := c_string.trim_left('_').capitalize()
+	mut v_string := c.filter_wrapper_name(c_string, true)
 	if v_string in the_map.values() {
 		vprintln('${@FN}dup: ${c_string} => ${v_string}')
 		v_string += '_vdup' + c.cnt.str() // renaming the struct's name, avoid duplicate
@@ -378,33 +378,38 @@ fn (mut c2v C2V) add_file(ast_path string, outv string, c_file string) {
 	mut curr_file := ''
 	mut keep_file := false
 	for mut node in all_nodes.inner {
-		if node.location.file != '' {
-			curr_file = os.real_path(node.location.file)
-			vprintln('==> node_id = ${node.id} curr_file=${curr_file}')
-			keep_file = !line_is_builtin_header(curr_file)
+		mut node_file := node.location.file
+		if node_file == '' {
+			node_file = node.location.spelling_file.path
 		}
-		if node.location.file != '' && keep_file {
-			if header_node.inner.len > 0 && header_node.location.file != '' {
-				vprintln('=====>processing header file ${header_node.location.file} node number=${header_node.inner.len}')
-				c2v.parse_comment(mut header_node, header_node.location.file)
-				c2v.tree.inner << header_node.inner
-			}
-			header_node = Node{
-				location: NodeLocation{
-					file: node.location.file
-					// source_file : SourceFile {
-					//	path : c_file
-					//}
-				}
-				range:    Range{
-					end: End{
-						offset: int(os.file_size(node.location.file)) + 10
+		if node_file == '' {
+			node_file = node.location.expansion_file.path
+		}
+
+		if node_file != '' && !node_file.starts_with('<') {
+			new_curr_file := os.real_path(node_file)
+			if new_curr_file != curr_file {
+				curr_file = new_curr_file
+				keep_file = !line_is_builtin_header(curr_file)
+				if keep_file {
+					if header_node.inner.len > 0 {
+						v_header_file := header_node.location.file
+						if v_header_file != '' && !v_header_file.starts_with('<') {
+							vprintln('=====>processing header file ${v_header_file} node number=${header_node.inner.len}')
+							c2v.parse_comment(mut header_node, v_header_file)
+						}
+						c2v.tree.inner << header_node.inner
+					}
+					header_node = Node{
+						location: NodeLocation{
+							file: node_file
+						}
 					}
 				}
 			}
-			header_node.inner << node
-			vprintln('processing header file ${node.location.file}')
-		} else if node.location.file == '' && keep_file {
+		}
+
+		if keep_file {
 			header_node.inner << node
 		}
 	}
@@ -531,7 +536,7 @@ fn (mut c C2V) fn_decl(mut node Node, gen_types string) {
 	if c_name in ['invalid', 'referenced'] {
 		return
 	}
-	if !c.single_fn_def && !c.used_fn.exists(c_name) && node.location.file_index != 0 {
+	if !c.single_fn_def && !c.is_wrapper && !c.used_fn.exists(c_name) && node.location.file_index != 0 {
 		vprintln('${c_name} => ${c.files[node.location.file_index]}')
 		vprintln('RRRR2 ${c_name} not here, skipping')
 		// This fn is not found in current .c file, means that it was only
@@ -595,14 +600,12 @@ fn (mut c C2V) fn_decl(mut node Node, gen_types string) {
 			}
 			c.genln(fn_def)
 		}
-		v_name := c_name.camel_to_snake()
+		v_name := c.filter_wrapper_name(c_name, false)
 		if v_name != c_name && !c.is_wrapper {
 			c.genln("@[c:'${c_name}']")
 		}
 		if c.is_wrapper {
-			// strip the "modulename__" from the start of the function
-			stripped_name := v_name.replace(c.wrapper_module_name + '_', '')
-			c.genln('pub fn ${stripped_name}(${str_args})${typ} {')
+			c.genln('pub fn ${v_name}(${str_args})${typ} {')
 		} else {
 			c.genln('fn ${v_name}(${str_args})${typ} {')
 		}
@@ -976,7 +979,7 @@ fn (mut c C2V) enum_decl(mut node Node) {
 	for i, mut child in node.inner {
 		c.gen_comment(child)
 		c_name := filter_name(child.name, false)
-		mut v_name := c_name.camel_to_snake().trim_left('_')
+		mut v_name := c.filter_wrapper_name(c_name, false)
 		vals << c_name
 		mut has_anon_generated := false
 		// empty enum means it's just a list of #define'ed consts
@@ -1647,21 +1650,25 @@ unique name')
 	if c.is_wrapper && typ.name.starts_with('_') {
 		return
 	}
-	if c.is_wrapper {
-		return
-	}
+	// if c.is_wrapper {
+	// 	return
+	// }
 	if !c.is_dir && is_extern && var_decl.redeclarations_count > 0 {
 		// This is an extern global, and it's declared later in the file without `extern`.
 		return
 	}
 	// Cut generated code from `c.out` to `c.globals_out`
 	start := c.out.len
+	if c.is_wrapper {
+		c.genln('pub const ${c_name} = C.${c_name}\n')
+		return
+	}
 	if is_const {
 		c.add_var_func_name(mut c.consts, c_name)
 		c.gen("@[export: '${c_name}']\n")
 		c.gen('const ${c_name} ')
 	} else {
-		if !c.used_global.exists(c_name) {
+		if !c.is_wrapper && !c.used_global.exists(c_name) {
 			vprintln('RRRR global ${c_name} not here, skipping')
 			// This global is not found in current .c file, means that it was only
 			// in the include file, so it's declared and used in some other .c file,
@@ -2253,6 +2260,47 @@ fn filter_name(name string, ignore_builtin bool) string {
 		return 'C.FILE'
 	}
 	return name
+}
+
+fn (c &C2V) filter_wrapper_name(name string, is_type bool) string {
+	if !c.is_wrapper {
+		if is_type {
+			return name.trim_left('_').capitalize()
+		}
+		return name.camel_to_snake().trim_left('_')
+	}
+	mut v_name := name
+	// Yoga hack: fix acronym casing so camel_to_snake works correctly
+	if v_name.starts_with('YG') {
+		v_name = 'Yg' + v_name[2..]
+	}
+
+	if is_type {
+		mut res := v_name.trim_left('_')
+		// Strip module prefix if any
+		if c.wrapper_module_name != '' && res.to_lower().starts_with(c.wrapper_module_name.to_lower() + '_') {
+			res = res[c.wrapper_module_name.len + 1..]
+		}
+		// Yoga hack: strip 'Yg'
+		if res.starts_with('Yg') {
+			res = res[2..]
+		}
+		return res.capitalize()
+	}
+
+	mut res := v_name.camel_to_snake()
+
+	// Strip module prefix if any
+	if c.wrapper_module_name != '' && res.starts_with(c.wrapper_module_name + '_') {
+		res = res[c.wrapper_module_name.len + 1..]
+	}
+
+	// Yoga hack: strip 'yg_'
+	if res.starts_with('yg_') {
+		res = res[3..]
+	}
+
+	return res.trim_left('_')
 }
 
 fn main() {

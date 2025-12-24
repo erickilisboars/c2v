@@ -42,9 +42,10 @@ mut:
 	offset        int
 	file          string @[json: 'file']
 	line          int
-	source_file   SourceFile @[json: 'includedFrom']
-	spelling_file SourceFile @[json: 'spellingLoc']
-	file_index    int = -1
+	source_file    SourceFile @[json: 'includedFrom']
+	spelling_file  SourceFile @[json: 'spellingLoc']
+	expansion_file SourceFile @[json: 'expansionLoc']
+	file_index     int = -1
 }
 
 struct Range {
