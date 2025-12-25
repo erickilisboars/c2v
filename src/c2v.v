@@ -390,7 +390,7 @@ fn (mut c2v C2V) add_file(ast_path string, outv string, c_file string) {
 			new_curr_file := os.real_path(node_file)
 			if new_curr_file != curr_file {
 				curr_file = new_curr_file
-				keep_file = !line_is_builtin_header(curr_file)
+				keep_file = !line_is_builtin_header(curr_file) || curr_file.starts_with(os.dir(os.real_path(c_file))) || (c2v.wrapper_module_name != '' && curr_file.contains(c2v.wrapper_module_name))
 				if keep_file {
 					if header_node.inner.len > 0 {
 						v_header_file := header_node.location.file
